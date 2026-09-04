@@ -172,7 +172,22 @@ describe("official Canva Connect API requests with mocked HTTP", () => {
     expect(init?.headers).toMatchObject({
       Authorization: "Bearer test-oauth-access-token",
     });
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
     expect(stdout).toContain("continuation: next-token");
+  });
+
+  it("maps Canva API request timeouts to a focused runtime error", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+        expect(init?.signal).toBeInstanceOf(AbortSignal);
+        const error = new Error("mock timeout");
+        error.name = "TimeoutError";
+        throw error;
+      }),
+    );
+    expect(await dispatch(registry, ["designs", "list"])).toBe(2);
+    expect(stdout).toContain("Canva API request timed out after 30 seconds");
   });
 
   it("creates a documented custom blank design only after confirmation", async () => {
@@ -448,6 +463,7 @@ describe("official Canva Connect API requests with mocked HTTP", () => {
       expect(calls[1]?.[1]?.headers).not.toMatchObject({
         Authorization: expect.anything(),
       });
+      expect(calls[1]?.[1]?.signal).toBeInstanceOf(AbortSignal);
       stdout = "";
       expect(await dispatch(registry, args)).toBe(1);
       expect(stdout).toContain("refusing to overwrite");
@@ -543,6 +559,47 @@ describe("official Canva Connect API requests with mocked HTTP", () => {
         ]),
       ).toBe(2);
       expect(stdout).toContain("redirected to a non-HTTPS URL");
+      expect(await readdir(directory)).toEqual([]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("maps export download timeouts and removes the staged file", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "canva-axi-timeout-"));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input);
+        expect(init?.signal).toBeInstanceOf(AbortSignal);
+        if (url.includes("/v1/exports/")) {
+          return jsonResponse({
+            job: {
+              id: "export_job",
+              status: "success",
+              urls: ["https://export-download.canva.test/page-1"],
+            },
+          });
+        }
+        const error = new Error("mock timeout");
+        error.name = "AbortError";
+        throw error;
+      }),
+    );
+    try {
+      expect(
+        await dispatch(registry, [
+          "exports",
+          "download",
+          "export_job",
+          "--output-dir",
+          directory,
+          "--format",
+          "png",
+          "--confirm",
+        ]),
+      ).toBe(2);
+      expect(stdout).toContain("export download timed out after 120 seconds");
       expect(await readdir(directory)).toEqual([]);
     } finally {
       await rm(directory, { recursive: true, force: true });

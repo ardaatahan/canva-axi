@@ -5,6 +5,8 @@ import { RuntimeError, UsageError } from "../output/errors.js";
 
 const DEFAULT_BASE_URL = "https://api.canva.com/rest";
 const ID_PATTERN = /^[a-zA-Z0-9_-]{1,50}$/;
+const API_TIMEOUT_MS = 30_000;
+const DOWNLOAD_TIMEOUT_MS = 120_000;
 
 export interface CanvaApi {
   request<T>(
@@ -68,6 +70,20 @@ async function parseResponse(response: Response): Promise<unknown> {
   }
 }
 
+function isTimeoutError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.name === "TimeoutError" || error.name === "AbortError")
+  );
+}
+
+function timeoutError(operation: string, timeoutMs: number): RuntimeError {
+  return new RuntimeError(
+    `${operation} timed out after ${timeoutMs / 1000} seconds`,
+    "check network access and retry",
+  );
+}
+
 export function createApi(): CanvaApi {
   const token = requireAccessToken();
   return {
@@ -86,23 +102,36 @@ export function createApi(): CanvaApi {
         Authorization: `Bearer ${token}`,
       };
       if (method === "POST") headers["Content-Type"] = "application/json";
+      const signal = AbortSignal.timeout(API_TIMEOUT_MS);
       let response: Response;
       try {
         response = await fetch(url, {
           method,
           headers,
+          signal,
           ...(method === "POST"
             ? { body: JSON.stringify(options.body ?? {}) }
             : {}),
         });
       } catch (error) {
+        if (isTimeoutError(error)) {
+          throw timeoutError("Canva API request", API_TIMEOUT_MS);
+        }
         const message = error instanceof Error ? error.message : String(error);
         throw new RuntimeError(
           `Canva API request failed: ${message}`,
           "check network access and retry",
         );
       }
-      const payload = await parseResponse(response);
+      let payload: unknown;
+      try {
+        payload = await parseResponse(response);
+      } catch (error) {
+        if (isTimeoutError(error)) {
+          throw timeoutError("Canva API response", API_TIMEOUT_MS);
+        }
+        throw error;
+      }
       if (!response.ok) {
         const record =
           payload && typeof payload === "object"
@@ -136,13 +165,18 @@ export function createApi(): CanvaApi {
           "do not download it; create a new export job and retry",
         );
       }
+      const signal = AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS);
       let response: Response;
       try {
         response = await fetch(parsed, {
           method: "GET",
           headers: { Accept: "application/octet-stream" },
+          signal,
         });
       } catch (error) {
+        if (isTimeoutError(error)) {
+          throw timeoutError("export download", DOWNLOAD_TIMEOUT_MS);
+        }
         const message = error instanceof Error ? error.message : String(error);
         throw new RuntimeError(
           `export download failed: ${message}`,
@@ -182,8 +216,12 @@ export function createApi(): CanvaApi {
             response.body as Parameters<typeof Readable.fromWeb>[0],
           ),
           createWriteStream(destination, { flags: "wx" }),
+          { signal },
         );
       } catch (error) {
+        if (isTimeoutError(error)) {
+          throw timeoutError("export download", DOWNLOAD_TIMEOUT_MS);
+        }
         const message = error instanceof Error ? error.message : String(error);
         throw new RuntimeError(
           `streaming export download failed: ${message}`,

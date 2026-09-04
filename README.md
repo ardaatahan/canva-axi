@@ -98,6 +98,8 @@ dimensions, regular/pro export quality, JPEG compression quality, and PNG
 lossless/background/single-image options. `exports get` returns the signed
 download URLs Canva documents as valid for 24 hours. `exports download` is a
 local convenience over those URLs; it refuses to overwrite existing files.
+Canva API requests time out after 30 seconds; export downloads, including the
+streamed response body, time out after 120 seconds.
 
 Autofill is not arbitrary element editing. The target design must have fields
 configured through Canva Data autofill, and field names not present in the
@@ -189,5 +191,3 @@ Reviewed against Canva's live documentation and OpenAPI description:
 - [Create design autofill job](https://www.canva.dev/docs/connect/api-reference/autofills/create-design-autofill-job/)
 - [Get design autofill job](https://www.canva.dev/docs/connect/api-reference/autofills/get-design-autofill-job/)
 - [Current Connect OpenAPI description](https://www.canva.dev/sources/connect/api/latest/api.yml)
-
-AXI-compliant CLI for Canva designs via Canva API (scaffold). Spec axi/1.0-2026-07.
