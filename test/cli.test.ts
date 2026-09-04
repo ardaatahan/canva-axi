@@ -37,6 +37,16 @@ function jsonResponse(
   });
 }
 
+function downloadResponse(
+  body: BodyInit,
+  status = 200,
+  finalUrl = "https://export-download.canva.test/file",
+): Response {
+  const response = new Response(body, { status });
+  Object.defineProperty(response, "url", { value: finalUrl });
+  return response;
+}
+
 let stdout = "";
 beforeEach(() => {
   stdout = "";
@@ -416,7 +426,7 @@ describe("official Canva Connect API requests with mocked HTTP", () => {
             },
           });
         }
-        return new Response(new Uint8Array([1, 2, 3]), { status: 200 });
+        return downloadResponse(new Uint8Array([1, 2, 3]), 200, url);
       }),
     );
     try {
@@ -466,9 +476,9 @@ describe("official Canva Connect API requests with mocked HTTP", () => {
           });
         }
         if (url.endsWith("/page-2") && failSecondPage) {
-          return new Response("failed", { status: 503 });
+          return downloadResponse("failed", 503, url);
         }
-        return new Response(new Uint8Array([1, 2, 3]), { status: 200 });
+        return downloadResponse(new Uint8Array([1, 2, 3]), 200, url);
       }),
     );
     const args = [
@@ -492,6 +502,48 @@ describe("official Canva Connect API requests with mocked HTTP", () => {
         "page-001.png",
         "page-002.png",
       ]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses an HTTPS export URL that redirects to HTTP", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "canva-axi-redirect-"));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.includes("/v1/exports/")) {
+          return jsonResponse({
+            job: {
+              id: "export_job",
+              status: "success",
+              urls: ["https://export-download.canva.test/page-1"],
+            },
+          });
+        }
+        return downloadResponse(
+          new Uint8Array([1, 2, 3]),
+          200,
+          "http://redirected.example.test/page-1",
+        );
+      }),
+    );
+    try {
+      expect(
+        await dispatch(registry, [
+          "exports",
+          "download",
+          "export_job",
+          "--output-dir",
+          directory,
+          "--format",
+          "png",
+          "--confirm",
+        ]),
+      ).toBe(2);
+      expect(stdout).toContain("redirected to a non-HTTPS URL");
+      expect(await readdir(directory)).toEqual([]);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

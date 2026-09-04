@@ -149,6 +149,21 @@ export function createApi(): CanvaApi {
           "retry before the 24-hour download URL expires",
         );
       }
+      let finalUrl: URL;
+      try {
+        finalUrl = new URL(response.url);
+      } catch {
+        throw new RuntimeError(
+          "export download returned an invalid final response URL",
+          "do not save it; create a new export job and retry",
+        );
+      }
+      if (finalUrl.protocol !== "https:") {
+        throw new RuntimeError(
+          "export download redirected to a non-HTTPS URL",
+          "do not save it; create a new export job and retry",
+        );
+      }
       if (!response.ok) {
         throw new RuntimeError(
           `export download returned HTTP ${response.status}`,

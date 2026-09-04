@@ -463,7 +463,6 @@ export const exportsDownload: CommandModule = {
         await link(stagedPaths[index]!, paths[index]!);
         publishedPaths.push(paths[index]!);
       }
-      await rm(stagingDir, { recursive: true, force: true });
     } catch (error) {
       await Promise.allSettled(
         publishedPaths.map((path) => rm(path, { force: true })),
@@ -471,6 +470,9 @@ export const exportsDownload: CommandModule = {
       await rm(stagingDir, { recursive: true, force: true }).catch(() => {});
       throw error;
     }
+    // Publishing succeeded. Staging cleanup is best-effort and must never
+    // roll back complete page files if the temporary directory cannot be removed.
+    await rm(stagingDir, { recursive: true, force: true }).catch(() => {});
     output(parsed, { export_id: id, files: paths });
     return 0;
   },
