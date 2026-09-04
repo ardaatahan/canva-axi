@@ -48,10 +48,10 @@ function baseUrl(): string {
       `use ${DEFAULT_BASE_URL} (or https://api.canva.cn/rest for China)`,
     );
   }
-  if (!["https:", "http:"].includes(parsed.protocol)) {
+  if (parsed.protocol !== "https:") {
     throw new UsageError(
-      "BASE_CANVA_CONNECT_API_URL must use HTTP or HTTPS",
-      `use ${DEFAULT_BASE_URL}`,
+      "BASE_CANVA_CONNECT_API_URL must use HTTPS",
+      `use ${DEFAULT_BASE_URL} (HTTP and local-host exceptions are not supported)`,
     );
   }
   return raw.replace(/\/+$/, "");

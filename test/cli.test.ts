@@ -190,6 +190,22 @@ describe("official Canva Connect API requests with mocked HTTP", () => {
     expect(stdout).toContain("Canva API request timed out after 30 seconds");
   });
 
+  it("rejects every HTTP API base, including local hosts, before fetch", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    for (const base of [
+      "http://api.canva.com/rest",
+      "http://localhost:3000/rest",
+      "http://127.0.0.1:3000/rest",
+    ]) {
+      process.env.BASE_CANVA_CONNECT_API_URL = base;
+      stdout = "";
+      expect(await dispatch(registry, ["designs", "list"])).toBe(1);
+      expect(stdout).toContain("BASE_CANVA_CONNECT_API_URL must use HTTPS");
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("creates a documented custom blank design only after confirmation", async () => {
     const fetchMock = vi.fn(async (_input: unknown, init?: RequestInit) =>
       jsonResponse({ design: { id: "Dcustom" }, observed: init }),

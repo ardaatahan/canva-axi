@@ -8,6 +8,8 @@
 - All API credentials come from `CANVA_ACCESS_TOKEN`. The official quickstart
   names `CANVA_CLIENT_ID` and `CANVA_CLIENT_SECRET`, but this CLI intentionally
   does not perform interactive OAuth or refresh-token storage.
+- `BASE_CANVA_CONNECT_API_URL` is HTTPS-only, including local development; do
+  not add localhost or `127.0.0.1` HTTP exceptions.
 - Every mutation must reject without `--confirm` before network access. Reads
   are ungated. Exit codes are 0 success, 1 usage/config/validation, and 2
   runtime/API.

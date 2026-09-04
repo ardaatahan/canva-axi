@@ -49,7 +49,8 @@ variables:
 URL, refresh tokens, files, command flags, or prompts. The client ID and secret
 are used by a backend to complete OAuth token exchange; they are not substitutes
 for the user access token required by design endpoints. Help and local
-discovery work without authentication.
+discovery work without authentication. `BASE_CANVA_CONNECT_API_URL` must use
+HTTPS; HTTP URLs are rejected without exceptions for localhost or `127.0.0.1`.
 
 Required Canva scopes by command:
 
