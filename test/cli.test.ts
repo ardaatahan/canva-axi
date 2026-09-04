@@ -38,11 +38,12 @@ function jsonResponse(
 }
 
 function downloadResponse(
-  body: BodyInit,
+  body: BodyInit | null,
   status = 200,
   finalUrl = "https://export-download.canva.test/file",
+  headers: Record<string, string> = {},
 ): Response {
-  const response = new Response(body, { status });
+  const response = new Response(body, { status, headers });
   Object.defineProperty(response, "url", { value: finalUrl });
   return response;
 }
@@ -204,6 +205,38 @@ describe("official Canva Connect API requests with mocked HTTP", () => {
       expect(stdout).toContain("BASE_CANVA_CONNECT_API_URL must use HTTPS");
     }
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects API bases with credentials, queries, or fragments", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    for (const base of [
+      "https://user:secret@api.canva.com/rest",
+      "https://api.canva.com/rest?region=test",
+      "https://api.canva.com/rest#fragment",
+    ]) {
+      process.env.BASE_CANVA_CONNECT_API_URL = base;
+      stdout = "";
+      expect(await dispatch(registry, ["designs", "list"])).toBe(1);
+      expect(stdout).toContain(
+        "must not include credentials, query parameters, or fragments",
+      );
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("canonicalizes trailing slashes in the HTTPS API base", async () => {
+    let observedUrl = "";
+    process.env.BASE_CANVA_CONNECT_API_URL = "https://api.test/rest///";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        observedUrl = String(input);
+        return jsonResponse({ items: [] });
+      }),
+    );
+    expect(await dispatch(registry, ["designs", "list"])).toBe(0);
+    expect(observedUrl).toBe("https://api.test/rest/v1/designs");
   });
 
   it("creates a documented custom blank design only after confirmation", async () => {
@@ -480,6 +513,7 @@ describe("official Canva Connect API requests with mocked HTTP", () => {
         Authorization: expect.anything(),
       });
       expect(calls[1]?.[1]?.signal).toBeInstanceOf(AbortSignal);
+      expect(calls[1]?.[1]?.redirect).toBe("manual");
       stdout = "";
       expect(await dispatch(registry, args)).toBe(1);
       expect(stdout).toContain("refusing to overwrite");
@@ -611,7 +645,7 @@ describe("official Canva Connect API requests with mocked HTTP", () => {
     }
   });
 
-  it("refuses an HTTPS export URL that redirects to HTTP", async () => {
+  it("refuses a non-HTTPS final response URL", async () => {
     const directory = await mkdtemp(join(tmpdir(), "canva-axi-redirect-"));
     vi.stubGlobal(
       "fetch",
@@ -647,6 +681,52 @@ describe("official Canva Connect API requests with mocked HTTP", () => {
         ]),
       ).toBe(2);
       expect(stdout).toContain("redirected to a non-HTTPS URL");
+      expect(await readdir(directory)).toEqual([]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses an intermediate HTTPS-to-HTTP redirect before following it", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "canva-axi-http-hop-"));
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        calls.push(url);
+        if (url.includes("/v1/exports/")) {
+          return jsonResponse({
+            job: {
+              id: "export_job",
+              status: "success",
+              urls: ["https://export-download.canva.test/page-1?token=secret"],
+            },
+          });
+        }
+        return downloadResponse(null, 302, url, {
+          Location: "http://insecure.example.test/page-1?token=secret",
+        });
+      }),
+    );
+    try {
+      expect(
+        await dispatch(registry, [
+          "exports",
+          "download",
+          "export_job",
+          "--output-dir",
+          directory,
+          "--format",
+          "png",
+          "--confirm",
+        ]),
+      ).toBe(2);
+      expect(stdout).toContain("attempted a non-HTTPS redirect");
+      expect(calls).toEqual([
+        "https://api.test/rest/v1/exports/export_job",
+        "https://export-download.canva.test/page-1?token=secret",
+      ]);
       expect(await readdir(directory)).toEqual([]);
     } finally {
       await rm(directory, { recursive: true, force: true });

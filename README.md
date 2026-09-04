@@ -51,6 +51,7 @@ are used by a backend to complete OAuth token exchange; they are not substitutes
 for the user access token required by design endpoints. Help and local
 discovery work without authentication. `BASE_CANVA_CONNECT_API_URL` must use
 HTTPS; HTTP URLs are rejected without exceptions for localhost or `127.0.0.1`.
+The base must not contain embedded credentials, query parameters, or fragments.
 
 Required Canva scopes by command:
 
@@ -100,7 +101,8 @@ lossless/background/single-image options. `exports get` returns the signed
 download URLs Canva documents as valid for 24 hours. `exports download` is a
 local convenience over those URLs; it refuses to overwrite existing files.
 Canva API requests time out after 30 seconds; export downloads, including the
-streamed response body, time out after 120 seconds.
+streamed response body, time out after 120 seconds. Export redirects are
+followed manually for at most five hops, and every hop must remain HTTPS.
 
 Autofill is not arbitrary element editing. The target design must have fields
 configured through Canva Data autofill, and field names not present in the

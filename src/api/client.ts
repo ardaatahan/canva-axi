@@ -7,6 +7,8 @@ const DEFAULT_BASE_URL = "https://api.canva.com/rest";
 const ID_PATTERN = /^[a-zA-Z0-9_-]{1,50}$/;
 const API_TIMEOUT_MS = 30_000;
 const DOWNLOAD_TIMEOUT_MS = 120_000;
+const MAX_DOWNLOAD_REDIRECTS = 5;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 export interface CanvaApi {
   request<T>(
@@ -54,7 +56,14 @@ function baseUrl(): string {
       `use ${DEFAULT_BASE_URL} (HTTP and local-host exceptions are not supported)`,
     );
   }
-  return raw.replace(/\/+$/, "");
+  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new UsageError(
+      "BASE_CANVA_CONNECT_API_URL must not include credentials, query parameters, or fragments",
+      `use a base URL such as ${DEFAULT_BASE_URL}`,
+    );
+  }
+  const pathname = parsed.pathname.replace(/\/+$/, "");
+  return `${parsed.origin}${pathname}`;
 }
 
 async function parseResponse(response: Response): Promise<unknown> {
@@ -166,22 +175,59 @@ export function createApi(): CanvaApi {
         );
       }
       const signal = AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS);
+      let currentUrl = parsed;
       let response: Response;
-      try {
-        response = await fetch(parsed, {
-          method: "GET",
-          headers: { Accept: "application/octet-stream" },
-          signal,
-        });
-      } catch (error) {
-        if (isTimeoutError(error)) {
-          throw timeoutError("export download", DOWNLOAD_TIMEOUT_MS);
+      let redirects = 0;
+      while (true) {
+        try {
+          response = await fetch(currentUrl, {
+            method: "GET",
+            headers: { Accept: "application/octet-stream" },
+            redirect: "manual",
+            signal,
+          });
+        } catch (error) {
+          if (isTimeoutError(error)) {
+            throw timeoutError("export download", DOWNLOAD_TIMEOUT_MS);
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          throw new RuntimeError(
+            `export download failed: ${message}`,
+            "retry before the 24-hour download URL expires",
+          );
         }
-        const message = error instanceof Error ? error.message : String(error);
-        throw new RuntimeError(
-          `export download failed: ${message}`,
-          "retry before the 24-hour download URL expires",
-        );
+        if (!REDIRECT_STATUSES.has(response.status)) break;
+        if (redirects >= MAX_DOWNLOAD_REDIRECTS) {
+          throw new RuntimeError(
+            `export download exceeded ${MAX_DOWNLOAD_REDIRECTS} redirects`,
+            "create a new export job and retry",
+          );
+        }
+        const location = response.headers.get("location");
+        if (!location) {
+          throw new RuntimeError(
+            `export download returned HTTP ${response.status} without a Location header`,
+            "create a new export job and retry",
+          );
+        }
+        let nextUrl: URL;
+        try {
+          nextUrl = new URL(location, currentUrl);
+        } catch {
+          throw new RuntimeError(
+            "export download returned an invalid redirect URL",
+            "create a new export job and retry",
+          );
+        }
+        if (nextUrl.protocol !== "https:") {
+          throw new RuntimeError(
+            "export download attempted a non-HTTPS redirect",
+            "do not follow it; create a new export job and retry",
+          );
+        }
+        await response.body?.cancel().catch(() => {});
+        currentUrl = nextUrl;
+        redirects++;
       }
       let finalUrl: URL;
       try {
