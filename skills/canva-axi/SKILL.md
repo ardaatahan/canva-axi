@@ -11,7 +11,7 @@ AXI-compliant Canva design and slideshow operations through the official Connect
 capabilities[3]{group,operations,safety}:
  designs,"list,get,create,dataset,export-formats",create requires --confirm
  exports,"create,get,download",create/download require --confirm
- autofills,"update,get",dataset-backed update requires --confirm and eligible Canva plan
+ autofills,"update,get",update requires --confirm; eligible Canva plan required
 help[4]:
  canva-axi designs list
  canva-axi designs create --width 1080 --height 1920 --confirm

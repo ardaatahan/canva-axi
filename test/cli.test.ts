@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -9,6 +9,7 @@ import { dispatch, type Registry } from "../src/cli/router.js";
 import { allCommands } from "../src/commands/canva.js";
 import { homeCommand, rootHelp } from "../src/commands/home.js";
 import { parseToon } from "../src/output/toon.js";
+import { homeData } from "../src/skill/content.js";
 
 const registry: Registry = {
   tool: "canva-axi",
@@ -67,6 +68,17 @@ describe("AXI shell contract", () => {
       expect(result.status, command).toBe(0);
       expect(result.stdout, command).toContain("flags[");
       expect(result.stderr, command).toBe("");
+    }
+  });
+
+  it("derives root help and capability operations from the command registry", () => {
+    const help = rootHelp();
+    const capabilities = homeData().capabilities;
+    for (const [name, command] of Object.entries(allCommands)) {
+      expect(help).toContain(command.spec.summary);
+      const [group, operation] = name.split(" ") as [string, string];
+      const capability = capabilities.find((item) => item.group === group);
+      expect(String(capability?.operations).split(",")).toContain(operation);
     }
   });
 
@@ -231,7 +243,29 @@ describe("official Canva Connect API requests with mocked HTTP", () => {
     });
   });
 
-  it("requires documented JPEG quality and rejects PNG-only flags", async () => {
+  it("validates page numbers as positive int32 values before network access", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    for (const pages of ["0", "1,", "2147483648", "9007199254740992"]) {
+      stdout = "";
+      expect(
+        await dispatch(registry, [
+          "exports",
+          "create",
+          "DAFVztcvd9z",
+          "--format",
+          "png",
+          "--pages",
+          pages,
+          "--confirm",
+        ]),
+      ).toBe(1);
+      expect(stdout).toContain("--pages");
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("requires JPEG quality and rejects format-specific flags", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     expect(
@@ -259,6 +293,21 @@ describe("official Canva Connect API requests with mocked HTTP", () => {
         "--confirm",
       ]),
     ).toBe(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+    stdout = "";
+    expect(
+      await dispatch(registry, [
+        "exports",
+        "create",
+        "DAFVztcvd9z",
+        "--format",
+        "png",
+        "--quality",
+        "90",
+        "--confirm",
+      ]),
+    ).toBe(1);
+    expect(stdout).toContain("--quality is only valid for JPEG");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -392,6 +441,57 @@ describe("official Canva Connect API requests with mocked HTTP", () => {
       stdout = "";
       expect(await dispatch(registry, args)).toBe(1);
       expect(stdout).toContain("refusing to overwrite");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("removes staged pages after a mid-batch download failure so retry succeeds", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "canva-axi-failure-"));
+    let failSecondPage = true;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.includes("/v1/exports/")) {
+          return jsonResponse({
+            job: {
+              id: "export_job",
+              status: "success",
+              urls: [
+                "https://export-download.canva.test/page-1",
+                "https://export-download.canva.test/page-2",
+              ],
+            },
+          });
+        }
+        if (url.endsWith("/page-2") && failSecondPage) {
+          return new Response("failed", { status: 503 });
+        }
+        return new Response(new Uint8Array([1, 2, 3]), { status: 200 });
+      }),
+    );
+    const args = [
+      "exports",
+      "download",
+      "export_job",
+      "--output-dir",
+      directory,
+      "--format",
+      "png",
+      "--confirm",
+    ];
+    try {
+      expect(await dispatch(registry, args)).toBe(2);
+      expect(await readdir(directory)).toEqual([]);
+
+      failSecondPage = false;
+      stdout = "";
+      expect(await dispatch(registry, args)).toBe(0);
+      expect(await readdir(directory)).toEqual([
+        "page-001.png",
+        "page-002.png",
+      ]);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

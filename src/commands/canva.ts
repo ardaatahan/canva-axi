@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { link, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { basename, join, resolve } from "node:path";
 import { booleanFlag, stringFlag, type Parsed } from "../cli/args.js";
 import type { CommandModule } from "../cli/router.js";
 import { createApi, validateId } from "../api/client.js";
@@ -41,13 +41,21 @@ function integerFlag(
 ): number | undefined {
   const raw = stringFlag(parsed, name);
   if (raw === undefined) return undefined;
+  return parseInteger(raw, `--${name}`, options);
+}
+
+function parseInteger(
+  raw: string,
+  label: string,
+  options: { min: number; max: number },
+): number {
   if (!/^\d+$/.test(raw)) {
-    throw new UsageError(`--${name} must be an integer`, `received: ${raw}`);
+    throw new UsageError(`${label} must be an integer`, `received: ${raw}`);
   }
   const value = Number(raw);
   if (!Number.isSafeInteger(value) || value < options.min || value > options.max) {
     throw new UsageError(
-      `--${name} must be between ${options.min} and ${options.max}`,
+      `${label} must be between ${options.min} and ${options.max}`,
       `received: ${raw}`,
     );
   }
@@ -58,16 +66,15 @@ function pagesFlag(parsed: Parsed): number[] | undefined {
   const raw = stringFlag(parsed, "pages");
   if (raw === undefined) return undefined;
   const values = raw.split(",");
-  if (
-    values.length === 0 ||
-    values.some((value) => !/^\d+$/.test(value) || Number(value) < 1)
-  ) {
+  if (values.length === 0 || values.some((value) => value === "")) {
     throw new UsageError(
       "--pages must be comma-separated one-based page numbers",
       "use a value such as --pages 1,2,3",
     );
   }
-  return values.map(Number);
+  return values.map((value) =>
+    parseInteger(value, "--pages value", { min: 1, max: 2_147_483_647 }),
+  );
 }
 
 function requireNonEmptyFlag(parsed: Parsed, name: string): string {
@@ -331,6 +338,12 @@ export const exportsCreate: CommandModule = {
         "provide --quality 1-100",
       );
     }
+    if (format !== "jpg" && quality !== undefined) {
+      throw new UsageError(
+        "--quality is only valid for JPEG exports",
+        "remove --quality or use --format jpg",
+      );
+    }
     const pngOnly = ["lossy", "transparent-background", "single-image"].some((flag) =>
       booleanFlag(parsed, flag),
     );
@@ -435,9 +448,28 @@ export const exportsDownload: CommandModule = {
       );
     }
     await mkdir(outputDir, { recursive: true });
-    for (let index = 0; index < job.urls.length; index++) {
-      const bytes = await api.download(String(job.urls[index]));
-      await writeFile(paths[index]!, bytes, { flag: "wx" });
+    const stagingDir = await mkdtemp(join(outputDir, ".canva-axi-"));
+    const stagedPaths = paths.map((path) =>
+      join(stagingDir, `${basename(path)}.tmp`),
+    );
+    const publishedPaths: string[] = [];
+    try {
+      for (let index = 0; index < job.urls.length; index++) {
+        await api.download(String(job.urls[index]), stagedPaths[index]!);
+      }
+      for (let index = 0; index < paths.length; index++) {
+        // A hard link atomically publishes a complete staged file and, unlike
+        // rename(), refuses if another process created the destination.
+        await link(stagedPaths[index]!, paths[index]!);
+        publishedPaths.push(paths[index]!);
+      }
+      await rm(stagingDir, { recursive: true, force: true });
+    } catch (error) {
+      await Promise.allSettled(
+        publishedPaths.map((path) => rm(path, { force: true })),
+      );
+      await rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+      throw error;
     }
     output(parsed, { export_id: id, files: paths });
     return 0;

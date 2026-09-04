@@ -1,31 +1,56 @@
 import { emitBlock, emitList } from "../output/toon.js";
+import { allCommands } from "../commands/canva.js";
 
 export const DESCRIPTION =
   "AXI-compliant Canva design and slideshow operations through the official Connect API";
 export const SPEC_VERSION = "axi/1.0-2026-07";
+
+function commandDisplay(command: (typeof allCommands)[string]): string {
+  const args = (command.spec.args ?? []).map((arg) =>
+    arg.required ? `<${arg.name}>` : `[<${arg.name}>]`,
+  );
+  return [command.spec.name, ...args].join(" ");
+}
+
+function capabilities(): Array<Record<string, string>> {
+  const groups = new Map<
+    string,
+    { operations: string[]; confirmed: string[] }
+  >();
+  for (const [name, command] of Object.entries(allCommands)) {
+    const [group, operation] = name.split(" ");
+    if (!group || !operation) continue;
+    const entry = groups.get(group) ?? { operations: [], confirmed: [] };
+    entry.operations.push(operation);
+    if (command.spec.flags.some((flag) => flag.name === "confirm")) {
+      entry.confirmed.push(operation);
+    }
+    groups.set(group, entry);
+  }
+  return [...groups.entries()].map(([group, entry]) => {
+    const confirmation =
+      entry.confirmed.length > 0
+        ? `${entry.confirmed.join("/")} ${
+            entry.confirmed.length === 1 ? "requires" : "require"
+          } --confirm`
+        : "read-only";
+    return {
+      group,
+      operations: entry.operations.join(","),
+      safety:
+        group === "autofills"
+          ? `${confirmation}; eligible Canva plan required`
+          : confirmation,
+    };
+  });
+}
 
 export function homeData(): {
   capabilities: Array<Record<string, string>>;
   help: string[];
 } {
   return {
-    capabilities: [
-      {
-        group: "designs",
-        operations: "list,get,create,dataset,export-formats",
-        safety: "create requires --confirm",
-      },
-      {
-        group: "exports",
-        operations: "create,get,download",
-        safety: "create/download require --confirm",
-      },
-      {
-        group: "autofills",
-        operations: "update,get",
-        safety: "dataset-backed update requires --confirm and eligible Canva plan",
-      },
-    ],
+    capabilities: capabilities(),
     help: [
       "canva-axi designs list",
       "canva-axi designs create --width 1080 --height 1920 --confirm",
@@ -52,24 +77,10 @@ export function rootHelpText(): string {
     `canva-axi: ${DESCRIPTION}`,
     emitList(
       "commands",
-      [
-        { command: "designs list", summary: "List design metadata" },
-        { command: "designs get <design-id>", summary: "Get design metadata" },
-        { command: "designs create", summary: "Create a blank preset/custom design" },
-        { command: "designs dataset <design-id>", summary: "Inspect autofill fields" },
-        {
-          command: "designs export-formats <design-id>",
-          summary: "Inspect available export formats",
-        },
-        { command: "exports create <design-id>", summary: "Start PNG/JPEG export" },
-        { command: "exports get <export-id>", summary: "Get export status and URLs" },
-        { command: "exports download <export-id>", summary: "Save completed image pages" },
-        {
-          command: "autofills update <design-id>",
-          summary: "Update configured text/image fields",
-        },
-        { command: "autofills get <job-id>", summary: "Get autofill job status" },
-      ],
+      Object.values(allCommands).map((command) => ({
+        command: commandDisplay(command),
+        summary: command.spec.summary,
+      })),
       ["command", "summary"],
     ),
     emitList(

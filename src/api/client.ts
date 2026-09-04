@@ -1,3 +1,6 @@
+import { createWriteStream } from "node:fs";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { RuntimeError, UsageError } from "../output/errors.js";
 
 const DEFAULT_BASE_URL = "https://api.canva.com/rest";
@@ -9,7 +12,7 @@ export interface CanvaApi {
     path: string,
     options?: { query?: URLSearchParams; body?: Record<string, unknown> },
   ): Promise<T>;
-  download(url: string): Promise<Uint8Array>;
+  download(url: string, destination: string): Promise<void>;
 }
 
 export function validateId(value: string, label: string): void {
@@ -117,7 +120,7 @@ export function createApi(): CanvaApi {
       }
       return payload as T;
     },
-    async download(url: string): Promise<Uint8Array> {
+    async download(url: string, destination: string): Promise<void> {
       let parsed: URL;
       try {
         parsed = new URL(url);
@@ -152,7 +155,26 @@ export function createApi(): CanvaApi {
           "retrieve the export job again or create a new export",
         );
       }
-      return new Uint8Array(await response.arrayBuffer());
+      if (!response.body) {
+        throw new RuntimeError(
+          "export download returned an empty response body",
+          "retrieve the export job again or create a new export",
+        );
+      }
+      try {
+        await pipeline(
+          Readable.fromWeb(
+            response.body as Parameters<typeof Readable.fromWeb>[0],
+          ),
+          createWriteStream(destination, { flags: "wx" }),
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new RuntimeError(
+          `streaming export download failed: ${message}`,
+          "retry before the 24-hour download URL expires",
+        );
+      }
     },
   };
 }
