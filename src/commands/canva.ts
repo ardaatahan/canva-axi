@@ -34,6 +34,13 @@ function requireConfirmation(parsed: Parsed, operation: string): void {
   }
 }
 
+function overwriteError(path: string): UsageError {
+  return new UsageError(
+    `refusing to overwrite ${path}`,
+    "choose an empty --output-dir",
+  );
+}
+
 function integerFlag(
   parsed: Parsed,
   name: string,
@@ -430,22 +437,31 @@ export const exportsDownload: CommandModule = {
       `/v1/exports/${encodeURIComponent(id)}`,
     );
     const job = payload.job as Record<string, unknown> | undefined;
-    if (!job || job.status !== "success" || !Array.isArray(job.urls)) {
+    if (!job || job.status !== "success") {
       throw new RuntimeError(
         `export job is ${String(job?.status ?? "invalid")}, not success`,
         `run 'canva-axi exports get ${id}' until the job succeeds`,
         payload,
       );
     }
-    const paths = job.urls.map((_, index) =>
+    const urls = job.urls;
+    if (
+      !Array.isArray(urls) ||
+      urls.length === 0 ||
+      urls.some((url) => typeof url !== "string" || url.trim() === "")
+    ) {
+      throw new RuntimeError(
+        "successful export job returned no valid download URLs",
+        "create a new export job and retry",
+        payload,
+      );
+    }
+    const paths = urls.map((_, index) =>
       resolve(outputDir, `page-${String(index + 1).padStart(3, "0")}.${format}`),
     );
     const existing = paths.find((path) => existsSync(path));
     if (existing) {
-      throw new UsageError(
-        `refusing to overwrite ${existing}`,
-        "choose an empty --output-dir",
-      );
+      throw overwriteError(existing);
     }
     await mkdir(outputDir, { recursive: true });
     const stagingDir = await mkdtemp(join(outputDir, ".canva-axi-"));
@@ -454,13 +470,23 @@ export const exportsDownload: CommandModule = {
     );
     const publishedPaths: string[] = [];
     try {
-      for (let index = 0; index < job.urls.length; index++) {
-        await api.download(String(job.urls[index]), stagedPaths[index]!);
+      for (let index = 0; index < urls.length; index++) {
+        await api.download(urls[index] as string, stagedPaths[index]!);
       }
       for (let index = 0; index < paths.length; index++) {
         // A hard link atomically publishes a complete staged file and, unlike
         // rename(), refuses if another process created the destination.
-        await link(stagedPaths[index]!, paths[index]!);
+        try {
+          await link(stagedPaths[index]!, paths[index]!);
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code === "EEXIST") throw overwriteError(paths[index]!);
+          const message = error instanceof Error ? error.message : String(error);
+          throw new RuntimeError(
+            `failed to publish ${paths[index]!}${code ? ` (${code})` : ""}: ${message}`,
+            "verify the output directory is writable and supports hard links, or choose a different --output-dir",
+          );
+        }
         publishedPaths.push(paths[index]!);
       }
     } catch (error) {

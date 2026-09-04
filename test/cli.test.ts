@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -467,6 +467,78 @@ describe("official Canva Connect API requests with mocked HTTP", () => {
       stdout = "";
       expect(await dispatch(registry, args)).toBe(1);
       expect(stdout).toContain("refusing to overwrite");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a successful export with no valid URLs before filesystem work", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "canva-axi-empty-"));
+    const outputDir = join(parent, "pages");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse({
+          job: { id: "export_job", status: "success", urls: [] },
+        }),
+      ),
+    );
+    try {
+      expect(
+        await dispatch(registry, [
+          "exports",
+          "download",
+          "export_job",
+          "--output-dir",
+          outputDir,
+          "--format",
+          "png",
+          "--confirm",
+        ]),
+      ).toBe(2);
+      expect(stdout).toContain("no valid download URLs");
+      expect(existsSync(outputDir)).toBe(false);
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  it("maps a concurrent publish collision to the overwrite usage error", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "canva-axi-collision-"));
+    const finalPath = join(directory, "page-001.png");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.includes("/v1/exports/")) {
+          return jsonResponse({
+            job: {
+              id: "export_job",
+              status: "success",
+              urls: ["https://export-download.canva.test/page-1"],
+            },
+          });
+        }
+        await writeFile(finalPath, "concurrent writer", { flag: "wx" });
+        return downloadResponse(new Uint8Array([1, 2, 3]), 200, url);
+      }),
+    );
+    try {
+      expect(
+        await dispatch(registry, [
+          "exports",
+          "download",
+          "export_job",
+          "--output-dir",
+          directory,
+          "--format",
+          "png",
+          "--confirm",
+        ]),
+      ).toBe(1);
+      expect(stdout).toContain(`refusing to overwrite ${finalPath}`);
+      expect(readFileSync(finalPath, "utf8")).toBe("concurrent writer");
+      expect(await readdir(directory)).toEqual(["page-001.png"]);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
